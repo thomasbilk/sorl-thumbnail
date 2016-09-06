@@ -2,7 +2,6 @@ import os
 from os.path import isfile, isdir, getmtime, dirname, splitext, getsize
 from tempfile import mkstemp
 from shutil import copyfile
-from subprocess import Popen, PIPE
 
 from PIL import Image, ImageFilter
 
@@ -16,6 +15,8 @@ class ThumbnailException(Exception):
 
 
 class Thumbnail(object):
+    imagemagick_file_types = defaults.IMAGEMAGICK_FILE_TYPES
+
     def __init__(self, source, requested_size, opts=None, quality=85,
                  dest=None, convert_path=defaults.CONVERT,
                  wvps_path=defaults.WVPS, processors=None):
@@ -25,29 +26,40 @@ class Thumbnail(object):
         # Absolute paths to files
         self.source = source
         self.dest = dest
-        self.type = type
 
         # Thumbnail settings
-        self.requested_size = requested_size
-        if not 0 < quality <= 100:
+        try:
+            x, y = [int(v) for v in requested_size]
+        except (TypeError, ValueError):
+            raise TypeError('Thumbnail received invalid value for size '
+                            'argument: %s' % repr(requested_size))
+        else:
+            self.requested_size = (x, y)
+        try:
+            self.quality = int(quality)
+            if not 0 < quality <= 100:
+                raise ValueError
+        except (TypeError, ValueError):
             raise TypeError('Thumbnail received invalid value for quality '
-                            'argument: %s' % quality)
-        self.quality = quality
+                            'argument: %r' % quality)
 
         # Processors
         if processors is None:
             processors = dynamic_import(defaults.PROCESSORS)
         self.processors = processors
 
+        # Handle old list format for opts.
+        opts = opts or {}
+        if isinstance(opts, (list, tuple)):
+            opts = dict([(opt, None) for opt in opts])
+
         # Set Thumbnail opt(ion)s
         VALID_OPTIONS = get_valid_options(processors)
-        opts = opts or []
-        # Check that all options received are valid
         for opt in opts:
             if not opt in VALID_OPTIONS:
                 raise TypeError('Thumbnail received an invalid option: %s'
                                 % opt)
-        self.opts = [opt for opt in VALID_OPTIONS if opt in opts]
+        self.opts = opts
 
         if self.dest is not None:
             self.generate()
@@ -70,7 +82,7 @@ class Thumbnail(object):
 
             # Ensure the directory exists
             directory = dirname(self.dest)
-            if not isdir(directory):
+            if directory and not isdir(directory):
                 os.makedirs(directory)
 
             self._do_generate()
@@ -124,6 +136,7 @@ class Thumbnail(object):
             except IOError, detail:
                 raise ThumbnailException(detail)
         return self._data
+
     def _set_data(self, im):
         self._data = im
     data = property(_get_data, _set_data)
@@ -136,7 +149,7 @@ class Thumbnail(object):
                                          self.source)
             if self.source_filetype == 'doc':
                 self._convert_wvps(self.source)
-            elif self.source_filetype == 'pdf':
+            elif self.source_filetype in self.imagemagick_file_types:
                 self._convert_imagemagick(self.source)
             else:
                 self.source_data = self.source
@@ -150,12 +163,20 @@ class Thumbnail(object):
                 self._source_data = Image.open(image)
             except IOError, detail:
                 raise ThumbnailException("%s: %s" % (detail, image))
+            except MemoryError:
+                raise ThumbnailException("Memory Error: %s" % image)
     source_data = property(_get_source_data, _set_source_data)
 
     def _convert_wvps(self, filename):
+        try:
+            import subprocess
+        except ImportError:
+            raise ThumbnailException('wvps requires the Python 2.4 subprocess '
+                                     'package.')
         tmp = mkstemp('.ps')[1]
         try:
-            p = Popen((self.wvps_path, filename, tmp), stdout=PIPE)
+            p = subprocess.Popen((self.wvps_path, filename, tmp),
+                                 stdout=subprocess.PIPE)
             p.wait()
         except OSError, detail:
             os.remove(tmp)
@@ -164,15 +185,20 @@ class Thumbnail(object):
         os.remove(tmp)
 
     def _convert_imagemagick(self, filename):
+        try:
+            import subprocess
+        except ImportError:
+            raise ThumbnailException('imagemagick requires the Python 2.4 '
+                                     'subprocess package.')
         tmp = mkstemp('.png')[1]
         if 'crop' in self.opts or 'autocrop' in self.opts:
-            x,y = [d*3 for d in self.requested_size]
+            x, y = [d * 3 for d in self.requested_size]
         else:
-            x,y = self.requested_size
+            x, y = self.requested_size
         try:
-            p = Popen((self.convert_path, '-size', '%sx%s' % (x,y),
+            p = subprocess.Popen((self.convert_path, '-size', '%sx%s' % (x, y),
                 '-antialias', '-colorspace', 'rgb', '-format', 'PNG24',
-                '%s[0]' % filename, tmp), stdout=PIPE)
+                '%s[0]' % filename, tmp), stdout=subprocess.PIPE)
             p.wait()
         except OSError, detail:
             os.remove(tmp)
@@ -194,20 +220,30 @@ class Thumbnail(object):
 
         self.data = im
 
-        dest_extension = os.path.splitext(self.dest)[1][1:]
-        if (self.source_data == self.data and
-                self.source_filetype == dest_extension):
+        filelike = not isinstance(self.dest, basestring)
+        if not filelike:
+            dest_extension = os.path.splitext(self.dest)[1][1:]
+            format = None
+        else:
+            dest_extension = None
+            format = 'JPEG'
+        if (self.source_filetype and self.source_filetype == dest_extension and
+                self.source_data == self.data):
             copyfile(self.source, self.dest)
         else:
             try:
-                im.save(self.dest, quality=self.quality, optimize=1)
+                im.save(self.dest, format=format, quality=self.quality,
+                        optimize=1)
             except IOError:
                 # Try again, without optimization (PIL can't optimize an image
                 # larger than ImageFile.MAXBLOCK, which is 64k by default)
                 try:
-                    im.save(self.dest, quality=self.quality)
+                    im.save(self.dest, format=format, quality=self.quality)
                 except IOError, detail:
                     raise ThumbnailException(detail)
+
+        if filelike:
+            self.dest.seek(0)
 
     # Some helpful methods
 

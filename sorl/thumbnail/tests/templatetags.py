@@ -4,6 +4,7 @@ import time
 from PIL import Image
 from django.conf import settings
 from django.template import Template, Context, TemplateSyntaxError
+from sorl.thumbnail.base import ThumbnailException
 from sorl.thumbnail.tests.classes import BaseTest, RELATIVE_PIC_NAME
 
 
@@ -15,7 +16,8 @@ class ThumbnailTagTest(BaseTest):
             'size': (90, 100),
             'invalid_size': (90, 'fish'),
             'strsize': '80x90',
-            'invalid_strsize': ('1notasize2')})
+            'invalid_strsize': ('1notasize2'),
+            'invalid_q': 'notanumber'})
         source = '{% load thumbnail %}' + source
         return Template(source).render(context)
 
@@ -27,23 +29,35 @@ class ThumbnailTagTest(BaseTest):
         self.assertRaises(TemplateSyntaxError, self.render_template, src)
         src = '{% thumbnail source %}'
         self.assertRaises(TemplateSyntaxError, self.render_template, src)
-        src = '{% thumbnail source 80x80 Xas variable %}'
-        self.assertRaises(TemplateSyntaxError, self.render_template, src)
-        src = '{% thumbnail source 80x80 as variable X %}'
+        src = '{% thumbnail source 80x80 as variable crop %}'
         self.assertRaises(TemplateSyntaxError, self.render_template, src)
 
         # Invalid option
         src = '{% thumbnail source 240x200 invalid %}'
         self.assertRaises(TemplateSyntaxError, self.render_template, src)
 
-        # Invalid quality
-        src = '{% thumbnail source 240x200 quality=a %}'
+        # Old comma separated options format can only have an = for quality
+        src = '{% thumbnail source 80x80 crop=1,quality=1 %}'
         self.assertRaises(TemplateSyntaxError, self.render_template, src)
+
+        # Invalid quality
+        src_invalid = '{% thumbnail source 240x200 quality=invalid_q %}'
+        src_missing = '{% thumbnail source 240x200 quality=missing_q %}'
+        # ...with THUMBNAIL_DEBUG = False
+        self.assertEqual(self.render_template(src_invalid), '')
+        self.assertEqual(self.render_template(src_missing), '')
+        # ...and with THUMBNAIL_DEBUG = True
+        self.change_settings.change({'DEBUG': True})
+        self.assertRaises(TemplateSyntaxError, self.render_template,
+                          src_invalid)
+        self.assertRaises(TemplateSyntaxError, self.render_template,
+                          src_missing)
 
         # Invalid source
         src = '{% thumbnail invalid_source 80x80 %}'
         src_on_context = '{% thumbnail invalid_source 80x80 as thumb %}'
         # ...with THUMBNAIL_DEBUG = False
+        self.change_settings.change({'DEBUG': False})
         self.assertEqual(self.render_template(src), '')
         # ...and with THUMBNAIL_DEBUG = True
         self.change_settings.change({'DEBUG': True})
@@ -126,9 +140,8 @@ class ThumbnailTagTest(BaseTest):
 
         # With options and quality
         output = self.render_template('src="'
-            '{% thumbnail source 240x240 sharpen,crop,quality=95 %}"')
-        # Note that the order of opts comes from VALID_OPTIONS to ensure a
-        # consistent filename.
+            '{% thumbnail source 240x240 sharpen crop quality=95 %}"')
+        # Note that the opts are sorted to ensure a consistent filename.
         expected = '%s_240x240_crop_sharpen_q95.jpg' % expected_base
         expected_fn = os.path.join(settings.MEDIA_ROOT, expected)
         self.verify_thumbnail((240, 240), expected_filename=expected_fn)
@@ -138,11 +151,17 @@ class ThumbnailTagTest(BaseTest):
         # With option and quality on context (also using its unicode method to
         # display the url)
         output = self.render_template(
+            '{% thumbnail source 240x240 sharpen crop quality=95 as thumb %}'
+            'width:{{ thumb.width }}, url:{{ thumb }}')
+        self.assertEqual(output, 'width:240, url:%s' % expected_url)
+
+        # Old comma separated format for options is still supported.
+        output = self.render_template(
             '{% thumbnail source 240x240 sharpen,crop,quality=95 as thumb %}'
             'width:{{ thumb.width }}, url:{{ thumb }}')
         self.assertEqual(output, 'width:240, url:%s' % expected_url)
 
-filesize_tests = """
+filesize_tests = r"""
 >>> from sorl.thumbnail.templatetags.thumbnail import filesize
 
 >>> filesize('abc')
@@ -201,7 +220,8 @@ filesize_tests = """
 1024 yobibytes, 1000 yottabytes
 
 # Test all fixed outputs (eg 'kB' or 'MiB')
->>> from sorl.thumbnail.templatetags.thumbnail import filesize_formats, filesize_long_formats
+>>> from sorl.thumbnail.templatetags.thumbnail import filesize_formats,\
+...    filesize_long_formats
 >>> for f in filesize_formats:
 ...     print '%s (%siB, %sB):' % (filesize_long_formats[f], f.upper(), f)
 ...     for i in range(0, 10):

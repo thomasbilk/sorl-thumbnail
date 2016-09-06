@@ -1,8 +1,12 @@
-import re
+import math
 import os
+import re
 
 
-re_thumbnail_file = re.compile(r'(?P<source_filename>.+)_(?P<x>\d+)x(?P<y>\d+)(?:_(?P<options>\w+))?_q(?P<quality>\d+)(?:.[^.]+)?$')
+re_thumbnail_file = re.compile(r'(?P<source_filename>.+)_(?P<x>\d+)x(?P<y>\d+)'
+                               r'(?:_(?P<options>\w+))?_q(?P<quality>\d+)'
+                               r'(?:.[^.]+)?$')
+re_new_args = re.compile('(?<!quality)=')
 
 
 def all_thumbnails(path, recursive=True, prefix=None, subdir=None):
@@ -54,7 +58,7 @@ def all_thumbnails(path, recursive=True, prefix=None, subdir=None):
             # '.'.
             m = re.match(r'(.*)_(.*)', source_filename)
             if m:
-                 source_filename = '%s.%s' % m.groups()
+                source_filename = '%s.%s' % m.groups()
             filename = os.path.join(rel_dir, source_filename)
             thumbnail_file = thumbnail_files.setdefault(filename, [])
             d['filename'] = os.path.join(dir_, file)
@@ -132,3 +136,35 @@ def delete_all_thumbnails(path, recursive=True):
     for thumbs in all_thumbnails(path, recursive=recursive).values():
         total += _delete_using_thumbs_list(thumbs)
     return total
+
+
+def split_args(args):
+    """
+    Split a list of argument strings into a dictionary where each key is an
+    argument name.
+
+    An argument looks like ``crop``, ``crop="some option"`` or ``crop=my_var``.
+    Arguments which provide no value get a value of ``None``.
+    """
+    if not args:
+        return {}
+    # Handle the old comma separated argument format.
+    if len(args) == 1 and not re_new_args.search(args[0]):
+        args = args[0].split(',')
+    # Separate out the key and value for each argument.
+    args_dict = {}
+    for arg in args:
+        split_arg = arg.split('=', 1)
+        value = len(split_arg) > 1 and split_arg[1] or None
+        args_dict[split_arg[0]] = value
+    return args_dict
+
+
+def image_entropy(im):
+    """
+    Calculate the entropy of an image. Used for "smart cropping".
+    """
+    hist = im.histogram()
+    hist_size = float(sum(hist))
+    hist = [h / hist_size for h in hist]
+    return -sum([p * math.log(p, 2) for p in hist if p != 0])

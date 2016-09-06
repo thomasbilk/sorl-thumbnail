@@ -1,6 +1,8 @@
+#! -*- coding: utf-8 -*-
 import unittest
 import os
 import time
+from StringIO import StringIO
 
 from PIL import Image
 from django.conf import settings
@@ -8,11 +10,8 @@ from django.conf import settings
 from sorl.thumbnail.base import Thumbnail
 from sorl.thumbnail.main import DjangoThumbnail, get_thumbnail_setting
 from sorl.thumbnail.processors import dynamic_import, get_valid_options
-from sorl.thumbnail.tests.base import BaseTest, RELATIVE_PIC_NAME, PIC_NAME, THUMB_NAME, PIC_SIZE
-
-
-PROCESSORS = dynamic_import(get_thumbnail_setting('PROCESSORS'))
-VALID_OPTIONS = get_valid_options(PROCESSORS)
+from sorl.thumbnail.tests.base import BaseTest, RELATIVE_PIC_NAME, PIC_NAME,\
+    THUMB_NAME, PIC_SIZE
 
 
 class ThumbnailTest(BaseTest):
@@ -53,6 +52,26 @@ class ThumbnailTest(BaseTest):
                           requested_size=thumb_size)
         self.assertNotEqual(os.path.getmtime(thumb_name), thumb_mtime)
 
+    def testFilelikeDest(self):
+        # Thumbnail
+        filelike_dest = StringIO()
+        thumb = Thumbnail(source=PIC_NAME, dest=filelike_dest,
+                          requested_size=(240, 240))
+        self.verify_thumbnail((240, 180), thumb)
+
+    def testRGBA(self):
+        # RGBA image
+        rgba_pic_name = os.path.join(settings.MEDIA_ROOT,
+                                     'sorl-thumbnail-test_rgba_source.png')
+        Image.new('RGBA', PIC_SIZE).save(rgba_pic_name)
+        self.images_to_delete.add(rgba_pic_name)
+        # Create thumb and verify it's still RGBA
+        rgba_thumb_name = os.path.join(settings.MEDIA_ROOT,
+                                       'sorl-thumbnail-test_rgba_dest.png')
+        thumb = Thumbnail(source=rgba_pic_name, dest=rgba_thumb_name,
+                          requested_size=(240, 240))
+        self.verify_thumbnail((240, 180), thumb, expected_mode='RGBA')
+
 
 class DjangoThumbnailTest(BaseTest):
     def setUp(self):
@@ -86,10 +105,13 @@ class DjangoThumbnailTest(BaseTest):
         self.verify_thumbnail((240, 120), thumb, expected_filename=expected)
 
         # All options on
+        processors = dynamic_import(get_thumbnail_setting('PROCESSORS'))
+        valid_options = get_valid_options(processors)
+
         thumb = DjangoThumbnail(relative_source=RELATIVE_PIC_NAME,
-                                requested_size=(240, 120), opts=VALID_OPTIONS)
-        expected = os.path.join(settings.MEDIA_ROOT, basename)
-        expected += '_240x120_bw_autocrop_crop_upscale_detail_sharpen_q85.jpg'
+                                requested_size=(240, 120), opts=valid_options)
+        expected = (os.path.join(settings.MEDIA_ROOT, basename) + '_240x120_'
+                    'autocrop_bw_crop_detail_max_sharpen_upscale_q85.jpg')
         self.verify_thumbnail((240, 120), thumb, expected_filename=expected)
 
         # Different basedir
@@ -113,7 +135,7 @@ class DjangoThumbnailTest(BaseTest):
         self.change_settings.change({'SUBDIR': '', 'PREFIX': 'prefix-'})
         thumb = DjangoThumbnail(relative_source=self.pic_subdir,
                                 requested_size=(240, 120))
-        expected = os.path.join(self.sub_dir, 'prefix-'+basename)
+        expected = os.path.join(self.sub_dir, 'prefix-' + basename)
         expected += '_240x120_q85.jpg'
         self.verify_thumbnail((160, 120), thumb, expected_filename=expected)
 
@@ -136,6 +158,18 @@ class DjangoThumbnailTest(BaseTest):
         # a different extension.
         self.assertNotEqual(os.path.getsize(expected_jpg),
                             os.path.getsize(expected))
+
+    def testUnicodeName(self):
+        unicode_name = 'sorl-thumbnail-ążśź_source.jpg'
+        unicode_path = os.path.join(settings.MEDIA_ROOT, unicode_name)
+        Image.new('RGB', PIC_SIZE).save(unicode_path)
+        self.images_to_delete.add(unicode_path)
+        thumb = DjangoThumbnail(relative_source=unicode_name,
+                                requested_size=(240, 120))
+        base_name = unicode_name.replace('.', '_')
+        expected = os.path.join(settings.MEDIA_ROOT,
+                                base_name + '_240x120_q85.jpg')
+        self.verify_thumbnail((160, 120), thumb, expected_filename=expected)
 
     def tearDown(self):
         super(DjangoThumbnailTest, self).tearDown()
