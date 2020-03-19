@@ -1,7 +1,7 @@
 from distutils.core import setup
  
 setup(
-    name = "sorl",
+    name = "sorl-thumbnail",
     version = "3.1",
     packages = [
         "sorl",
